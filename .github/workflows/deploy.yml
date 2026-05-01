@@ -60,6 +60,39 @@ jobs:
             --query taskDefinition \
             --output json > task-definition.json
 
+      - name: Inject secrets into task definition
+        run: |
+          python3 << 'EOF'
+          import json, sys
+
+          with open('task-definition.json', 'r') as f:
+              td = json.load(f)
+
+          # Find the counselling container
+          for container in td['containerDefinitions']:
+              if container['name'] == '${{ env.CONTAINER_NAME }}':
+                  # Get existing env vars as dict for easy merge
+                  env_map = {e['name']: e['value'] for e in container.get('environment', [])}
+
+                  # Add/overwrite with secrets from GitHub Actions
+                  env_map['DB_PASSWORD'] = '${{ secrets.DB_PASSWORD }}'
+                  env_map['COUNSELLING_BOT_TOKEN'] = '${{ secrets.COUNSELLING_BOT_TOKEN }}'
+
+                  # Convert back to list format
+                  container['environment'] = [{'name': k, 'value': v} for k, v in env_map.items()]
+                  break
+
+          # Remove fields that cannot be updated in a new task definition revision
+          for key in ['taskDefinitionArn', 'revision', 'status', 'requiresAttributes',
+                      'placementConstraints', 'compatibilities', 'registeredAt', 'registeredBy']:
+              td.pop(key, None)
+
+          with open('task-definition.json', 'w') as f:
+              json.dump(td, f, indent=2)
+
+          print("Updated task definition with secrets")
+          EOF
+
       - name: Update task definition with new image
         id: update-task-def
         uses: aws-actions/amazon-ecs-render-task-definition@v1
