@@ -1,7 +1,9 @@
 """Telegram bot handlers for NEET rank to college lookup.
 
-Conversation flow: /start → rank → category → quota → results
+Conversation flow:
+/start → rank → multi-select category → done → multi-select quota → done → phone → results
 """
+import json
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.constants import ParseMode
@@ -15,59 +17,48 @@ from telegram.ext import (
     filters,
 )
 
-from .db import get_neet_options, close_pool
+from .db import get_neet_options, get_neet_options_for_categories, store_lead, close_pool
 
 logger = logging.getLogger(__name__)
 
 RANK, CATEGORY, QUOTA, PHONE, RESULTS = range(5)
-CATEGORIES = ["OPEN", "SC", "ST", "OBC", "EWS"]
-
-QUOTAS = [
-    "All India",
-    "Open Seat Quota",
-    "Delhi University Quota",
-    "Deemed/Paid Seats Quota",
-    "Aligarh Muslim University (AMU) Quota",
-    "Non-Resident Indian",
-    "Internal - Puducherry UT Domicile",
-    "Delhi NCR Children/Widows of Personnel of the Armed Forces (CW) DU Quota",
-    "Employees State Insurance Scheme(ESI)",
-    "Jamia Internal Quota",
+_ALL_CATEGORIES = ["OPEN", "SC", "ST", "OBC", "EWS"]
+_QUOTAS = [
+    ("All India", "ai"),
+    ("Open Seat Quota", "os"),
+    ("Delhi University Quota", "du"),
+    ("Deemed/Paid Seats Quota", "dp"),
+    ("Aligarh Muslim University (AMU) Quota", "am"),
+    ("Non-Resident Indian", "nr"),
+    ("Internal – Puducherry UT Domicile", "pu"),
+    ("Delhi NCR Children/Widows of Personnel of the Armed Forces (CW) DU Quota", "cw"),
+    ("Employees State Insurance Scheme(ESI)", "es"),
+    ("Jamia Internal Quota", "ja"),
 ]
-
-QUOTA_SHORT = {
-    "All India": "All India",
-    "Open Seat Quota": "Open Seat",
-    "Delhi University Quota": "DU Quota",
-    "Deemed/Paid Seats Quota": "Deemed/Paid",
-    "Aligarh Muslim University (AMU) Quota": "AMU Quota",
-    "Non-Resident Indian": "NRI",
-    "Internal - Puducherry UT Domicile": "Puducherry",
-    "Delhi NCR Children/Widows of Personnel of the Armed Forces (CW) DU Quota": "CW DU",
-    "Employees State Insurance Scheme(ESI)": "ESI",
-    "Jamia Internal Quota": "Jamia",
-}
-
-# Short codes must stay under Telegram's 64-byte callback_data limit
-QUOTA_CODES = {
-    "All India": "ai",
-    "Open Seat Quota": "os",
-    "Delhi University Quota": "du",
-    "Deemed/Paid Seats Quota": "dp",
-    "Aligarh Muslim University (AMU) Quota": "am",
-    "Non-Resident Indian": "nr",
-    "Internal - Puducherry UT Domicile": "pu",
-    "Delhi NCR Children/Widows of Personnel of the Armed Forces (CW) DU Quota": "cw",
-    "Employees State Insurance Scheme(ESI)": "es",
-    "Jamia Internal Quota": "ja",
-}
-FULL_QUOTA = {v: k for k, v in QUOTA_CODES.items()}
+# reverse short-code mapping for DB queries
+FULL_QUOTA = {code: name for name, code in _QUOTAS}
 
 
-def _kb(items, prefix):
-    buttons = [InlineKeyboardButton(l, callback_data=f"{prefix}:{v}")
-               for v, l in items]
-    return InlineKeyboardMarkup([buttons[i:i + 2] for i in range(0, len(buttons), 2)])
+def _category_kb(selected: set) -> InlineKeyboardMarkup:
+    """Build category inline keyboard with ✅/❌ toggle per item."""
+    buttons = []
+    for cat in _ALL_CATEGORIES:
+        mark = "✅" if cat in selected else "❌"
+        buttons.append(InlineKeyboardButton(f"{mark} {cat}", callback_data=f"cat:{cat}"))
+    done_btn = InlineKeyboardButton("✅ Done", callback_data="cat:done")
+    return InlineKeyboardMarkup([buttons[i:i + 2] for i in range(0, len(buttons), 2)] + [[done_btn]])
+
+
+def _quota_kb(selected: set) -> InlineKeyboardMarkup:
+    """Build quota inline keyboard with ✅/❌ toggle per item."""
+    buttons = []
+    for name, code in _QUOTAS:
+        mark = "✅" if code in selected else "❌"
+        # keep button label short
+        short = name.split("(")[0].strip()[:20]  # first 20 chars
+        buttons.append(InlineKeyboardButton(f"{mark} {short}", callback_data=f"quota:{code}"))
+    done_btn = InlineKeyboardButton("✅ Done", callback_data="quota:done")
+    return InlineKeyboardMarkup([buttons[i:i + 1] for i in range(0, len(buttons), 1)] + [[done_btn]])
 
 
 async def start(u: Update, _: ContextTypes.DEFAULT_TYPE) -> int:
@@ -85,27 +76,175 @@ async def got_rank(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         await u.message.reply_text("Enter a valid number rank.")
         return RANK
     ctx.user_data["rank"] = int(text)
+    ctx.user_data["selected_cats"] = {"OPEN"}  # default pre-selected
+    q = ctx.user_data["rank"]
     await u.message.reply_text(
-        "Pick your <b>category</b>:",
-        reply_markup=_kb([(c, c) for c in CATEGORIES], "cat"),
+        f"Rank: <b>{q}</b>\n\nPick your <b>categories</b> (tap to toggle, then Done):",
+        reply_markup=_category_kb(ctx.user_data["selected_cats"]),
         parse_mode=ParseMode.HTML,
     )
     return CATEGORY
 
 
-async def got_category(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+async def toggle_category(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     q = u.callback_query
     await q.answer()
-    _, cat = q.data.split(":", 1)
-    ctx.user_data["category"] = cat
-    items = [(QUOTA_CODES[v], QUOTA_SHORT.get(v, v)) for v in QUOTAS]
-    items.append(("*", "All Quotas"))
-    await q.edit_message_text(
-        f"Category: <b>{cat}</b>\n\nPick <b>quota</b>:",
-        reply_markup=_kb(items, "quota"),
+    payload = q.data.split(":", 1)[1]
+
+    if payload == "done":
+        if not ctx.user_data["selected_cats"]:
+            await q.answer("Select at least one category", show_alert=True)
+            return CATEGORY
+        ctx.user_data["selected_quotas"] = {"ai"}  # All India pre-selected
+        await q.edit_message_text(
+            "Categories: <b>{}</b>\n\nPick your <b>quotas</b> (tap to toggle, then Done):".format(
+                ", ".join(sorted(ctx.user_data["selected_cats"]))
+            ),
+            reply_markup=_quota_kb(ctx.user_data["selected_quotas"]),
+            parse_mode=ParseMode.HTML,
+        )
+        return QUOTA
+
+    # toggle
+    selected = ctx.user_data["selected_cats"]
+    if payload in selected:
+        selected.discard(payload)
+    else:
+        selected.add(payload)
+    await q.edit_message_reply_markup(reply_markup=_category_kb(selected))
+    return CATEGORY
+
+
+async def toggle_quota(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    q = u.callback_query
+    await q.answer()
+    payload = q.data.split(":", 1)[1]
+
+    if payload == "done":
+        if not ctx.user_data["selected_quotas"]:
+            await q.answer("Select at least one quota", show_alert=True)
+            return QUOTA
+        cat_str = ", ".join(sorted(ctx.user_data["selected_cats"]))
+        quota_names = [FULL_QUOTA.get(c, c) for c in ctx.user_data["selected_quotas"]]
+        await q.edit_message_text(
+            f"Rank: <b>{ctx.user_data['rank']}</b>\n"
+            f"Categories: <b>{cat_str}</b>\n"
+            f"Quotas: <b>{', '.join(quota_names)}</b>\n\n"
+            "Please share your <b>phone number</b> to view results.",
+            parse_mode=ParseMode.HTML,
+        )
+        kb = ReplyKeyboardMarkup(
+            [[KeyboardButton("📱 Share Contact", request_contact=True)]],
+            resize_keyboard=True,
+            one_time_keyboard=True,
+        )
+        await q.message.reply_text(
+            "Tap the button below to share your contact:",
+            reply_markup=kb,
+        )
+        return PHONE
+
+    selected = ctx.user_data["selected_quotas"]
+    if payload in selected:
+        selected.discard(payload)
+    else:
+        selected.add(payload)
+    await q.edit_message_reply_markup(reply_markup=_quota_kb(selected))
+    return QUOTA
+
+
+async def got_phone(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    contact = u.message.contact
+    if contact:
+        phone = contact.phone_number
+        full_name = contact.first_name or ""
+        if contact.last_name:
+            full_name += " " + contact.last_name
+    else:
+        phone = u.message.text.strip()
+        full_name = u.effective_user.full_name or ""
+
+    ctx.user_data["phone"] = phone
+    ctx.user_data["full_name"] = full_name
+    rank = ctx.user_data["rank"]
+    cats = sorted(ctx.user_data["selected_cats"])
+    quotas = [FULL_QUOTA.get(c, c) for c in sorted(ctx.user_data["selected_quotas"])]
+
+    logger.info("User %s phone: %s rank: %s cats: %s quotas: %s", u.effective_user.id, phone, rank, cats, quotas)
+
+    # persist lead
+    try:
+        await store_lead(
+            telegram_user_id=u.effective_user.id,
+            phone=phone,
+            full_name=full_name,
+            rank=rank,
+            categories=cats,
+            quotas=quotas,
+        )
+    except Exception as e:
+        logger.error("Failed to store lead: %s", e)
+
+    await u.message.reply_text(
+        f"Thanks <b>{full_name}</b>!\nFetching results for Rank <b>{rank}</b>…",
+        reply_markup=ReplyKeyboardRemove(),
         parse_mode=ParseMode.HTML,
     )
-    return QUOTA
+
+    # fetch results for multiple categories/quotas
+    try:
+        rows = await get_neet_options_for_categories(
+            rank, cats, quotas, max_rows=100
+        )
+    except Exception as e:
+        logger.error("DB error: %s", e)
+        await u.message.reply_text("Could not fetch results. Try again later.")
+        return ConversationHandler.END
+
+    if not rows:
+        await u.message.reply_text(
+            f"No colleges found for Rank <b>{rank}</b>, Categories <b>{', '.join(cats)}</b>.",
+            parse_mode=ParseMode.HTML,
+        )
+        return ConversationHandler.END
+
+    ctx.user_data["results"] = rows
+    ctx.user_data["results_offset"] = 0
+    ctx.user_data["quota_label"] = ", ".join(quotas[:3]) + ("…" if len(quotas) > 3 else "")
+
+    text = _build_results_text(rows, 0, rank, ", ".join(cats), ctx.user_data["quota_label"])
+    has_more = len(rows) > 25
+    await u.message.reply_text(text, reply_markup=_results_kb(has_more), parse_mode=ParseMode.HTML)
+    return RESULTS
+
+
+async def show_more(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    q = u.callback_query
+    await q.answer()
+
+    rows = ctx.user_data.get("results", [])
+    offset = ctx.user_data.get("results_offset", 0) + 25
+    ctx.user_data["results_offset"] = offset
+
+    rank = ctx.user_data["rank"]
+    cat_str = ", ".join(sorted(ctx.user_data["selected_cats"]))
+    quota_label = ctx.user_data.get("quota_label", "")
+
+    text = _build_results_text(rows, offset, rank, cat_str, quota_label)
+    has_more = len(rows) > offset + 25
+    await q.edit_message_text(text, reply_markup=_results_kb(has_more), parse_mode=ParseMode.HTML)
+    return RESULTS
+
+
+async def start_over(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    q = u.callback_query
+    await q.answer()
+    ctx.user_data.clear()
+    await q.edit_message_text(
+        "<b>NEET College Predictor</b>\n\nSend your <b>NEET All India Rank</b> (e.g. <code>27360</code>):",
+        parse_mode=ParseMode.HTML,
+    )
+    return RANK
 
 
 def _format_row(idx: int, row: dict) -> str:
@@ -133,107 +272,13 @@ def _results_kb(has_more: bool) -> InlineKeyboardMarkup:
 def _build_results_text(rows: list, offset: int, rank: int, cat: str, quota_label: str) -> str:
     total = len(rows)
     end = min(offset + 25, total)
-    header = f"<b>Results for Rank {rank} ({cat}) | Quota: {quota_label}</b>\n"
+    header = f"<b>Results for Rank {rank} ({cat})</b>\n"
     header += f"<i>Showing {offset + 1}-{end} of {total} colleges</i>\n\n"
     lines = [_format_row(i + 1, row) for i, row in enumerate(rows[offset:end], start=offset)]
     text = header + "\n".join(lines)
     if len(text) > 4000:
         text = text[:4000] + "\n… <i>(truncated)</i>"
     return text
-
-
-async def got_quota(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    q = u.callback_query
-    await q.answer()
-    _, quota_code = q.data.split(":", 1)
-
-    cat = ctx.user_data["category"]
-    quota = None if quota_code == "*" else FULL_QUOTA.get(quota_code, quota_code)
-    ctx.user_data["quota"] = quota
-    ctx.user_data["quota_label"] = "All Quotas" if quota is None else quota
-
-    kb = ReplyKeyboardMarkup(
-        [[KeyboardButton("📱 Share Contact", request_contact=True)]],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-    )
-    await q.edit_message_text(
-        "Category: <b>{}</b>\nQuota: <b>{}</b>\n\nPlease share your <b>phone number</b> to view results.".format(cat, ctx.user_data["quota_label"]),
-        parse_mode=ParseMode.HTML,
-    )
-    await q.message.reply_text(
-        "Tap the button below to share your contact:",
-        reply_markup=kb,
-    )
-    return PHONE
-
-
-async def got_phone(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    phone = u.message.contact.phone_number if u.message.contact else u.message.text.strip()
-    ctx.user_data["phone"] = phone
-    logger.info("User %s phone: %s", u.effective_user.id, phone)
-
-    rank = ctx.user_data["rank"]
-    cat = ctx.user_data["category"]
-    quota = ctx.user_data.get("quota")
-    quota_label = ctx.user_data["quota_label"]
-
-    await u.message.reply_text(
-        "Thanks! Fetching results for Rank <b>{}</b>, Category <b>{}</b>...".format(rank, cat),
-        reply_markup=ReplyKeyboardRemove(),
-        parse_mode=ParseMode.HTML,
-    )
-
-    try:
-        rows = await get_neet_options(rank, cat, quota, max_rows=100)
-    except Exception as e:
-        logger.error("DB error: %s", e)
-        await u.message.reply_text("Could not fetch results. Try again later.")
-        return ConversationHandler.END
-
-    if not rows:
-        await u.message.reply_text(
-            f"No colleges found for Rank <b>{rank}</b>, Category <b>{cat}</b>.",
-            parse_mode=ParseMode.HTML,
-        )
-        return ConversationHandler.END
-
-    ctx.user_data["results"] = rows
-    ctx.user_data["results_offset"] = 0
-
-    text = _build_results_text(rows, 0, rank, cat, quota_label)
-    has_more = len(rows) > 25
-    await u.message.reply_text(text, reply_markup=_results_kb(has_more), parse_mode=ParseMode.HTML)
-    return RESULTS
-
-
-async def show_more(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    q = u.callback_query
-    await q.answer()
-
-    rows = ctx.user_data.get("results", [])
-    offset = ctx.user_data.get("results_offset", 0) + 25
-    ctx.user_data["results_offset"] = offset
-
-    rank = ctx.user_data["rank"]
-    cat = ctx.user_data["category"]
-    quota_label = ctx.user_data.get("quota_label", "")
-
-    text = _build_results_text(rows, offset, rank, cat, quota_label)
-    has_more = len(rows) > offset + 25
-    await q.edit_message_text(text, reply_markup=_results_kb(has_more), parse_mode=ParseMode.HTML)
-    return RESULTS
-
-
-async def start_over(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    q = u.callback_query
-    await q.answer()
-    ctx.user_data.clear()
-    await q.edit_message_text(
-        "<b>NEET College Predictor</b>\n\nSend your <b>NEET All India Rank</b> (e.g. <code>27360</code>):",
-        parse_mode=ParseMode.HTML,
-    )
-    return RANK
 
 
 async def cancel(u: Update, _: ContextTypes.DEFAULT_TYPE) -> int:
@@ -246,9 +291,10 @@ async def help_cmd(u: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         "<b>How to use</b>\n"
         "1. /start\n"
         "2. Enter your NEET All India Rank\n"
-        "3. Pick category (OPEN, SC, ST, OBC, EWS)\n"
-        "4. Pick quota type (All India, Open Seat, DU, etc.)\n"
-        "5. See available colleges\n\n"
+        "3. Pick categories (tap to toggle, then Done)\n"
+        "4. Pick quotas (tap to toggle, then Done)\n"
+        "5. Share your phone contact\n"
+        "6. See available colleges\n\n"
         "/start to restart.",
         parse_mode=ParseMode.HTML,
     )
@@ -272,8 +318,8 @@ def create_app(token: str) -> Application:
         entry_points=[CommandHandler("start", start)],
         states={
             RANK: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_rank)],
-            CATEGORY: [CallbackQueryHandler(got_category, pattern=r"^cat:")],
-            QUOTA: [CallbackQueryHandler(got_quota, pattern=r"^quota:")],
+            CATEGORY: [CallbackQueryHandler(toggle_category, pattern=r"^cat:")],
+            QUOTA: [CallbackQueryHandler(toggle_quota, pattern=r"^quota:")],
             PHONE: [
                 MessageHandler(filters.CONTACT, got_phone),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, got_phone),
