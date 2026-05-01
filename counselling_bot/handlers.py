@@ -3,7 +3,7 @@
 Conversation flow: /start → rank → category → quota → results
 """
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
@@ -19,7 +19,7 @@ from .db import get_neet_options, close_pool
 
 logger = logging.getLogger(__name__)
 
-RANK, CATEGORY, QUOTA, RESULTS = range(4)
+RANK, CATEGORY, QUOTA, PHONE, RESULTS = range(5)
 CATEGORIES = ["OPEN", "SC", "ST", "OBC", "EWS"]
 
 QUOTAS = [
@@ -147,20 +147,52 @@ async def got_quota(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     await q.answer()
     _, quota_code = q.data.split(":", 1)
 
-    rank = ctx.user_data["rank"]
     cat = ctx.user_data["category"]
     quota = None if quota_code == "*" else FULL_QUOTA.get(quota_code, quota_code)
-    quota_label = "All Quotas" if quota is None else quota
+    ctx.user_data["quota"] = quota
+    ctx.user_data["quota_label"] = "All Quotas" if quota is None else quota
+
+    kb = ReplyKeyboardMarkup(
+        [[KeyboardButton("📱 Share Contact", request_contact=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+    await q.edit_message_text(
+        "Category: <b>{}</b>\nQuota: <b>{}</b>\n\nPlease share your <b>phone number</b> to view results.".format(cat, ctx.user_data["quota_label"]),
+        parse_mode=ParseMode.HTML,
+    )
+    await u.message.reply_text(
+        "Tap the button below to share your contact:",
+        reply_markup=kb,
+    )
+    return PHONE
+
+
+async def got_phone(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    phone = u.message.contact.phone_number if u.message.contact else u.message.text.strip()
+    ctx.user_data["phone"] = phone
+    logger.info("User %s phone: %s", u.effective_user.id, phone)
+
+    rank = ctx.user_data["rank"]
+    cat = ctx.user_data["category"]
+    quota = ctx.user_data.get("quota")
+    quota_label = ctx.user_data["quota_label"]
+
+    await u.message.reply_text(
+        "Thanks! Fetching results for Rank <b>{}</b>, Category <b>{}</b>...".format(rank, cat),
+        reply_markup=ReplyKeyboardRemove(),
+        parse_mode=ParseMode.HTML,
+    )
 
     try:
         rows = await get_neet_options(rank, cat, quota, max_rows=100)
     except Exception as e:
         logger.error("DB error: %s", e)
-        await q.edit_message_text("Could not fetch results. Try again later.")
+        await u.message.reply_text("Could not fetch results. Try again later.")
         return ConversationHandler.END
 
     if not rows:
-        await q.edit_message_text(
+        await u.message.reply_text(
             f"No colleges found for Rank <b>{rank}</b>, Category <b>{cat}</b>.",
             parse_mode=ParseMode.HTML,
         )
@@ -168,11 +200,10 @@ async def got_quota(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     ctx.user_data["results"] = rows
     ctx.user_data["results_offset"] = 0
-    ctx.user_data["quota_label"] = quota_label
 
     text = _build_results_text(rows, 0, rank, cat, quota_label)
     has_more = len(rows) > 25
-    await q.edit_message_text(text, reply_markup=_results_kb(has_more), parse_mode=ParseMode.HTML)
+    await u.message.reply_text(text, reply_markup=_results_kb(has_more), parse_mode=ParseMode.HTML)
     return RESULTS
 
 
@@ -243,6 +274,10 @@ def create_app(token: str) -> Application:
             RANK: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_rank)],
             CATEGORY: [CallbackQueryHandler(got_category, pattern=r"^cat:")],
             QUOTA: [CallbackQueryHandler(got_quota, pattern=r"^quota:")],
+            PHONE: [
+                MessageHandler(filters.CONTACT, got_phone),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, got_phone),
+            ],
             RESULTS: [
                 CallbackQueryHandler(show_more, pattern=r"^more$"),
                 CallbackQueryHandler(start_over, pattern=r"^restart$"),
