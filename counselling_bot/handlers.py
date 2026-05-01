@@ -161,7 +161,7 @@ async def got_quota(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         "Category: <b>{}</b>\nQuota: <b>{}</b>\n\nPlease share your <b>phone number</b> to view results.".format(cat, ctx.user_data["quota_label"]),
         parse_mode=ParseMode.HTML,
     )
-    await u.message.reply_text(
+    await q.message.reply_text(
         "Tap the button below to share your contact:",
         reply_markup=kb,
     )
