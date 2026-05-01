@@ -19,7 +19,7 @@ from .db import get_neet_options, close_pool
 
 logger = logging.getLogger(__name__)
 
-RANK, CATEGORY, QUOTA = range(3)
+RANK, CATEGORY, QUOTA, RESULTS = range(4)
 CATEGORIES = ["OPEN", "SC", "ST", "OBC", "EWS"]
 
 QUOTAS = [
@@ -108,6 +108,40 @@ async def got_category(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     return QUOTA
 
 
+def _format_row(idx: int, row: dict) -> str:
+    name = row.get("institution_name", "?")
+    prog = row.get("program_code", "")
+    ql = row.get("quota_label", "")
+    o = row.get("opening_rank", "")
+    c = row.get("closing_rank", "")
+    rnd = row.get("round_key", "")
+    return (
+        f"<b>{idx}. {name}</b>\n"
+        f"   Program: {prog} | Quota: {ql}\n"
+        f"   Rank: {o} → {c} | Round: {rnd}\n"
+    )
+
+
+def _results_kb(has_more: bool) -> InlineKeyboardMarkup:
+    buttons = []
+    if has_more:
+        buttons.append(InlineKeyboardButton("📋 Show More", callback_data="more"))
+    buttons.append(InlineKeyboardButton("🔄 Start Over", callback_data="restart"))
+    return InlineKeyboardMarkup([buttons])
+
+
+def _build_results_text(rows: list, offset: int, rank: int, cat: str, quota_label: str) -> str:
+    total = len(rows)
+    end = min(offset + 25, total)
+    header = f"<b>Results for Rank {rank} ({cat}) | Quota: {quota_label}</b>\n"
+    header += f"<i>Showing {offset + 1}-{end} of {total} colleges</i>\n\n"
+    lines = [_format_row(i + 1, row) for i, row in enumerate(rows[offset:end], start=offset)]
+    text = header + "\n".join(lines)
+    if len(text) > 4000:
+        text = text[:4000] + "\n… <i>(truncated)</i>"
+    return text
+
+
 async def got_quota(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     q = u.callback_query
     await q.answer()
@@ -119,7 +153,7 @@ async def got_quota(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     quota_label = "All Quotas" if quota is None else quota
 
     try:
-        rows = await get_neet_options(rank, cat, quota, max_rows=30)
+        rows = await get_neet_options(rank, cat, quota, max_rows=100)
     except Exception as e:
         logger.error("DB error: %s", e)
         await q.edit_message_text("Could not fetch results. Try again later.")
@@ -132,25 +166,43 @@ async def got_quota(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         )
         return ConversationHandler.END
 
-    lines = [f"<b>Options for Rank {rank} ({cat})</b>\n"]
-    for row in rows[:50]:
-        name = row.get("institution_name", "?")
-        prog = row.get("program_code", "")
-        ql = row.get("quota_label", "")
-        o = row.get("opening_rank", "")
-        c = row.get("closing_rank", "")
-        rnd = row.get("round_key", "")
-        lines.append(
-            f"• <b>{name}</b> | {prog}\n"
-            f"  Quota: {ql}\n"
-            f"  Rank: {o} → {c} | {rnd}\n"
-        )
+    ctx.user_data["results"] = rows
+    ctx.user_data["results_offset"] = 0
+    ctx.user_data["quota_label"] = quota_label
 
-    text = "\n".join(lines)
-    if len(text) > 4000:
-        text = text[:4000] + "\n… (truncated)"
-    await q.edit_message_text(text, parse_mode=ParseMode.HTML)
-    return ConversationHandler.END
+    text = _build_results_text(rows, 0, rank, cat, quota_label)
+    has_more = len(rows) > 25
+    await q.edit_message_text(text, reply_markup=_results_kb(has_more), parse_mode=ParseMode.HTML)
+    return RESULTS
+
+
+async def show_more(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    q = u.callback_query
+    await q.answer()
+
+    rows = ctx.user_data.get("results", [])
+    offset = ctx.user_data.get("results_offset", 0) + 25
+    ctx.user_data["results_offset"] = offset
+
+    rank = ctx.user_data["rank"]
+    cat = ctx.user_data["category"]
+    quota_label = ctx.user_data.get("quota_label", "")
+
+    text = _build_results_text(rows, offset, rank, cat, quota_label)
+    has_more = len(rows) > offset + 25
+    await q.edit_message_text(text, reply_markup=_results_kb(has_more), parse_mode=ParseMode.HTML)
+    return RESULTS
+
+
+async def start_over(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    q = u.callback_query
+    await q.answer()
+    ctx.user_data.clear()
+    await q.edit_message_text(
+        "<b>NEET College Predictor</b>\n\nSend your <b>NEET All India Rank</b> (e.g. <code>27360</code>):",
+        parse_mode=ParseMode.HTML,
+    )
+    return RANK
 
 
 async def cancel(u: Update, _: ContextTypes.DEFAULT_TYPE) -> int:
@@ -191,6 +243,10 @@ def create_app(token: str) -> Application:
             RANK: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_rank)],
             CATEGORY: [CallbackQueryHandler(got_category, pattern=r"^cat:")],
             QUOTA: [CallbackQueryHandler(got_quota, pattern=r"^quota:")],
+            RESULTS: [
+                CallbackQueryHandler(show_more, pattern=r"^more$"),
+                CallbackQueryHandler(start_over, pattern=r"^restart$"),
+            ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
