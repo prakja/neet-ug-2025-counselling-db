@@ -48,6 +48,21 @@ QUOTA_SHORT = {
     "Jamia Internal Quota": "Jamia",
 }
 
+# Short codes must stay under Telegram's 64-byte callback_data limit
+QUOTA_CODES = {
+    "All India": "ai",
+    "Open Seat Quota": "os",
+    "Delhi University Quota": "du",
+    "Deemed/Paid Seats Quota": "dp",
+    "Aligarh Muslim University (AMU) Quota": "am",
+    "Non-Resident Indian": "nr",
+    "Internal - Puducherry UT Domicile": "pu",
+    "Delhi NCR Children/Widows of Personnel of the Armed Forces (CW) DU Quota": "cw",
+    "Employees State Insurance Scheme(ESI)": "es",
+    "Jamia Internal Quota": "ja",
+}
+FULL_QUOTA = {v: k for k, v in QUOTA_CODES.items()}
+
 
 def _kb(items, prefix):
     buttons = [InlineKeyboardButton(l, callback_data=f"{prefix}:{v}")
@@ -83,7 +98,7 @@ async def got_category(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     await q.answer()
     _, cat = q.data.split(":", 1)
     ctx.user_data["category"] = cat
-    items = [(v, QUOTA_SHORT.get(v, v)) for v in QUOTAS]
+    items = [(QUOTA_CODES[v], QUOTA_SHORT.get(v, v)) for v in QUOTAS]
     items.append(("*", "All Quotas"))
     await q.edit_message_text(
         f"Category: <b>{cat}</b>\n\nPick <b>quota</b>:",
@@ -96,16 +111,12 @@ async def got_category(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 async def got_quota(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     q = u.callback_query
     await q.answer()
-    _, quota_label = q.data.split(":", 1)
+    _, quota_code = q.data.split(":", 1)
 
     rank = ctx.user_data["rank"]
     cat = ctx.user_data["category"]
-    quota = None if quota_label == "*" else quota_label
-
-    await q.edit_message_text(
-        f"Fetching for Rank <b>{rank}</b> | {cat} | Quota: <b>{quota_label if quota is not None else 'All Quotas'}</b>",
-        parse_mode=ParseMode.HTML,
-    )
+    quota = None if quota_code == "*" else FULL_QUOTA.get(quota_code, quota_code)
+    quota_label = "All Quotas" if quota is None else quota
 
     try:
         rows = await get_neet_options(rank, cat, quota, max_rows=30)
