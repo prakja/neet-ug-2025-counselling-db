@@ -1,0 +1,100 @@
+{
+    "taskDefinitionArn": "arn:aws:ecs:ap-south-1:559387212220:task-definition/neet-counselling-dev:1",
+    "containerDefinitions": [
+        {
+            "name": "counselling",
+            "image": "559387212220.dkr.ecr.ap-south-1.amazonaws.com/neet-counselling-dev:latest",
+            "cpu": 0,
+            "portMappings": [],
+            "essential": true,
+            "command": [
+                "python",
+                "run_counselling_bot.py"
+            ],
+            "environment": [
+                {
+                    "name": "AWS_REGION",
+                    "value": "ap-south-1"
+                },
+                {
+                    "name": "DB_NAME",
+                    "value": "learner_development"
+                },
+                {
+                    "name": "DB_HOST",
+                    "value": "neetprep-staging.cvvtorjqg7t7.ap-south-1.rds.amazonaws.com"
+                },
+                {
+                    "name": "DB_PORT",
+                    "value": "5432"
+                },
+                {
+                    "name": "DB_USER",
+                    "value": "learner"
+                }
+            ],
+            "mountPoints": [],
+            "volumesFrom": [],
+            "secrets": [],
+            "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                    "awslogs-group": "/ecs/neet-counselling-dev",
+                    "awslogs-region": "ap-south-1",
+                    "awslogs-stream-prefix": "ecs"
+                }
+            },
+            "systemControls": []
+        }
+    ],
+    "family": "neet-counselling-dev",
+    "taskRoleArn": "arn:aws:iam::559387212220:role/neet-counselling-dev-ecs-task",
+    "executionRoleArn": "arn:aws:iam::559387212220:role/neet-counselling-dev-ecs-execution",
+    "networkMode": "awsvpc",
+    "revision": 1,
+    "volumes": [],
+    "status": "ACTIVE",
+    "requiresAttributes": [
+        {
+            "name": "com.amazonaws.ecs.capability.logging-driver.awslogs"
+        },
+        {
+            "name": "ecs.capability.execution-role-awslogs"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.ecr-auth"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.docker-remote-api.1.19"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.task-iam-role"
+        },
+        {
+            "name": "ecs.capability.execution-role-ecr-pull"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.docker-remote-api.1.18"
+        },
+        {
+            "name": "ecs.capability.task-eni"
+        }
+    ],
+    "placementConstraints": [],
+    "compatibilities": [
+        "EC2",
+        "FARGATE",
+        "MANAGED_INSTANCES"
+    ],
+    "runtimePlatform": {
+        "cpuArchitecture": "ARM64",
+        "operatingSystemFamily": "LINUX"
+    },
+    "requiresCompatibilities": [
+        "FARGATE"
+    ],
+    "cpu": "256",
+    "memory": "512",
+    "registeredAt": 1777618118.015,
+    "registeredBy": "arn:aws:iam::559387212220:user/prakja"
+}
