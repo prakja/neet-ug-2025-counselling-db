@@ -95,7 +95,7 @@ async def toggle_category(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         if not ctx.user_data["selected_cats"]:
             await q.answer("Select at least one category", show_alert=True)
             return CATEGORY
-        ctx.user_data["selected_quotas"] = {"ai"}  # All India pre-selected
+        ctx.user_data["selected_quotas"] = {"ai", "os"}
         await q.edit_message_text(
             "Categories: <b>{}</b>\n\nPick your <b>quotas</b> (tap to toggle, then Done):".format(
                 ", ".join(sorted(ctx.user_data["selected_cats"]))
