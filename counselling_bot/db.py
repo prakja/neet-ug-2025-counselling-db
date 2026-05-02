@@ -79,7 +79,13 @@ async def store_lead(telegram_user_id, phone, full_name, rank, categories, quota
             INSERT INTO neetcounselling2025.leads
                 (telegram_user_id, phone_number, full_name, rank, categories, quotas)
             VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT DO NOTHING
+            ON CONFLICT (telegram_user_id)
+            DO UPDATE SET
+                phone_number = EXCLUDED.phone_number,
+                full_name = EXCLUDED.full_name,
+                rank = EXCLUDED.rank,
+                categories = EXCLUDED.categories,
+                quotas = EXCLUDED.quotas
             """,
             telegram_user_id,
             phone,
@@ -89,6 +95,23 @@ async def store_lead(telegram_user_id, phone, full_name, rank, categories, quota
             json.dumps(quotas),
         )
     logger.info("Stored lead for user %s rank %s", telegram_user_id, rank)
+
+
+async def log_query(telegram_user_id, rank, categories, quotas):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO neetcounselling2025.queries
+                (telegram_user_id, rank, categories, quotas)
+            VALUES ($1, $2, $3, $4)
+            """,
+            telegram_user_id,
+            rank,
+            json.dumps(categories),
+            json.dumps(quotas),
+        )
+    logger.info("Logged query for user %s rank %s", telegram_user_id, rank)
 
 
 async def check_lead_exists(telegram_user_id):

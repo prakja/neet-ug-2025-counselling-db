@@ -7,7 +7,7 @@ from telegram.ext import ContextTypes, ConversationHandler
 from counselling_bot.handlers import (
     RANK, CATEGORY, QUOTA, PHONE, RESULTS,
     start, got_rank, toggle_category, toggle_quota, got_phone,
-    show_more,
+    show_more, share_results,
     _show_results, _build_results_text, _results_kb,
     _category_kb, _quota_kb, _ALL_CATEGORIES, _QUOTAS, FULL_QUOTA,
 )
@@ -200,18 +200,45 @@ def test_build_results_text_simple():
 
 
 def test_results_kb_with_more():
-    """Show More + Start Over when >25 results."""
+    """Show More + Share + Start Over when >25 results."""
     kb = _results_kb(True)
-    assert len(kb.inline_keyboard[0]) == 2
+    assert len(kb.inline_keyboard) == 2
     assert "Show More" in kb.inline_keyboard[0][0].text
-    assert "Start Over" in kb.inline_keyboard[0][1].text
+    assert "Share" in kb.inline_keyboard[0][1].text
+    assert "Start Over" in kb.inline_keyboard[1][0].text
 
 
 def test_results_kb_without_more():
-    """Only Start Over when ≤25 results."""
+    """Share + Start Over when ≤25 results."""
     kb = _results_kb(False)
-    assert len(kb.inline_keyboard[0]) == 1
-    assert "Start Over" in kb.inline_keyboard[0][0].text
+    assert len(kb.inline_keyboard) == 1
+    assert len(kb.inline_keyboard[0]) == 2
+    assert "Share" in kb.inline_keyboard[0][0].text
+    assert "Start Over" in kb.inline_keyboard[0][1].text
+
+
+# Test for share_results
+@pytest.mark.asyncio
+async def test_share_results(mock_update, mock_callback_query, mock_context):
+    mock_context.user_data = {
+        "rank": 50000,
+        "selected_cats": {"OPEN", "OBC"},
+        "selected_quotas": {"ai", "os"},
+        "results": [
+            {"institution_name": "AIIMS Delhi", "program_code": "MBBS", "quota_label": "All India"},
+            {"institution_name": "MAMC", "program_code": "MBBS", "quota_label": "DU Quota"},
+        ],
+    }
+    mock_callback_query.data = "share"
+    result = await share_results(mock_update, mock_context)
+    assert result == RESULTS
+    mock_callback_query.message.reply_text.assert_called_once()
+    call_args = mock_callback_query.message.reply_text.call_args
+    text = call_args[0][0] if call_args[0] else call_args[1].get("text", "")
+    assert "AIIMS Delhi" in text
+    reply_markup = call_args[1].get("reply_markup")
+    assert reply_markup is not None
+    assert any("neet_ug_college_bot" in btn.url for row in reply_markup.inline_keyboard for btn in row)
 
 
 # Test for dedup logic

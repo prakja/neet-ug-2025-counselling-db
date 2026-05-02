@@ -18,7 +18,14 @@ from telegram.ext import (
     filters,
 )
 
-from .db import get_neet_options, get_neet_options_for_categories, store_lead, check_lead_exists, close_pool
+from .db import (
+    get_neet_options,
+    get_neet_options_for_categories,
+    store_lead,
+    check_lead_exists,
+    log_query,
+    close_pool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -235,6 +242,16 @@ async def _show_results(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         logger.error("_show_results: no message available on update")
         return ConversationHandler.END
 
+    try:
+        await log_query(
+            telegram_user_id=u.effective_user.id,
+            rank=rank,
+            categories=cats,
+            quotas=quotas,
+        )
+    except Exception as e:
+        logger.error("Failed to log query for user %s: %s", u.effective_user.id, e)
+
     await msg.reply_text(
         f"Fetching results for Rank <b>{html.escape(str(rank))}</b>…",
         parse_mode=ParseMode.HTML,
@@ -301,6 +318,37 @@ async def start_over(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     return RANK
 
 
+async def share_results(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    q = u.callback_query
+    await q.answer()
+
+    rank = ctx.user_data.get("rank")
+    cats = sorted(ctx.user_data.get("selected_cats", []))
+    quotas = [FULL_QUOTA.get(c, c) for c in sorted(ctx.user_data.get("selected_quotas", []))]
+    rows = ctx.user_data.get("results", [])[:3]
+
+    college_names = [html.escape(r.get("institution_name", "?")) for r in rows]
+    college_summary = ", ".join(college_names) if college_names else "No colleges found"
+
+    share_text = (
+        f"🏥 I found my NEET colleges using this bot!\n\n"
+        f"Rank: <b>{html.escape(str(rank))}</b>\n"
+        f"Categories: <b>{html.escape(', '.join(cats))}</b>\n"
+        f"Quotas: <b>{html.escape(', '.join(quotas))}</b>\n\n"
+        f"Top colleges: <i>{college_summary}</i>\n\n"
+        f"Try it yourself 👇"
+    )
+
+    await q.message.reply_text(
+        share_text,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Open Bot", url="https://t.me/neet_ug_college_bot")]
+        ]),
+        parse_mode=ParseMode.HTML,
+    )
+    return RESULTS
+
+
 def _trunc(text: str, max_len: int = 25) -> str:
     return text[:max_len] if len(text) <= max_len else text[:max_len - 1] + "…"
 
@@ -343,8 +391,9 @@ def _results_kb(has_more: bool) -> InlineKeyboardMarkup:
     buttons = []
     if has_more:
         buttons.append(InlineKeyboardButton("📋 Show More", callback_data="more"))
+    buttons.append(InlineKeyboardButton("📤 Share", callback_data="share"))
     buttons.append(InlineKeyboardButton("🔄 Start Over", callback_data="restart"))
-    return InlineKeyboardMarkup([buttons])
+    return InlineKeyboardMarkup([buttons[i:i + 2] for i in range(0, len(buttons), 2)])
 
 
 async def cancel(u: Update, _: ContextTypes.DEFAULT_TYPE) -> int:
@@ -392,6 +441,7 @@ def create_app(token: str) -> Application:
             ],
             RESULTS: [
                 CallbackQueryHandler(show_more, pattern=r"^more$"),
+                CallbackQueryHandler(share_results, pattern=r"^share$"),
                 CallbackQueryHandler(start_over, pattern=r"^restart$"),
             ],
         },
