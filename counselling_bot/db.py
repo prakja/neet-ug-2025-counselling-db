@@ -44,7 +44,8 @@ async def get_neet_options_for_categories(rank, categories: list, quotas: list, 
                 max_rows,   # $8 p_max_rows
             )
             for r in rows:
-                key = (r.get("mcc_institute_code"), r.get("program_code"), r.get("quota_label"), r.get("round_key"))
+                inst_key = r.get("mcc_institute_code") or r.get("institution_name")
+                key = (inst_key, r.get("program_code"), r.get("quota_label"), r.get("round_key"))
                 if key not in seen:
                     seen.add(key)
                     all_rows.append(dict(r))

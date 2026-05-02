@@ -216,16 +216,16 @@ def test_results_kb_without_more():
 
 # Test for dedup logic
 def test_dedup_key_from_sql_columns():
-    """Dedup key must use actual SQL columns, not missing institution_id."""
     row = {
-        "mcc_institute_code": 12345,
+        "mcc_institute_code": None,
+        "institution_name": "Test College",
         "program_code": "MBBS",
         "quota_label": "All India",
         "round_key": "R1",
     }
-    # This is what the code SHOULD do
-    key = (row.get("mcc_institute_code"), row.get("program_code"), row.get("quota_label"), row.get("round_key"))
-    assert key == (12345, "MBBS", "All India", "R1")
+    inst_key = row.get("mcc_institute_code") or row.get("institution_name")
+    key = (inst_key, row.get("program_code"), row.get("quota_label"), row.get("round_key"))
+    assert key == ("Test College", "MBBS", "All India", "R1")
 
 
 # Integration: full flow
