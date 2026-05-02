@@ -123,10 +123,12 @@ async def toggle_category(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def toggle_quota(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     q = u.callback_query
+    logger.info("toggle_quota user=%s data=%s user_data_keys=%s", u.effective_user.id, q.data, list(ctx.user_data.keys()))
     await q.answer()
     payload = q.data.split(":", 1)[1]
 
     if "selected_quotas" not in ctx.user_data:
+        logger.warning("toggle_quota: no selected_quotas for user %s", u.effective_user.id)
         await q.edit_message_text(
             "Session expired. /start to restart.",
             parse_mode=ParseMode.HTML,
@@ -134,20 +136,27 @@ async def toggle_quota(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         return ConversationHandler.END
 
     if payload == "done":
+        logger.info("toggle_quota: done pressed user=%s selected=%s", u.effective_user.id, ctx.user_data["selected_quotas"])
         if not ctx.user_data["selected_quotas"]:
             await q.answer("Select at least one quota", show_alert=True)
             return QUOTA
 
-        # Check if user already shared contact (lead exists)
-        existing = await check_lead_exists(u.effective_user.id)
+        try:
+            existing = await check_lead_exists(u.effective_user.id)
+        except Exception as e:
+            logger.error("toggle_quota: check_lead_exists failed for user %s: %s", u.effective_user.id, e)
+            await q.edit_message_text("Error checking your profile. /start to restart.", parse_mode=ParseMode.HTML)
+            return ConversationHandler.END
+
         if existing:
             ctx.user_data["phone"] = existing["phone_number"]
             ctx.user_data["full_name"] = existing["full_name"]
-            logger.info("User %s already has lead, skipping phone step", u.effective_user.id)
+            logger.info("toggle_quota: user %s has lead, calling _show_results", u.effective_user.id)
             return await _show_results(u, ctx)
 
         cat_str = ", ".join(sorted(ctx.user_data["selected_cats"]))
         quota_names = [FULL_QUOTA.get(c, c) for c in ctx.user_data["selected_quotas"]]
+        logger.info("toggle_quota: user %s no lead, showing phone prompt", u.effective_user.id)
         await q.edit_message_text(
             f"Rank: <b>{ctx.user_data['rank']}</b>\n"
             f"Categories: <b>{cat_str}</b>\n"
@@ -171,6 +180,7 @@ async def toggle_quota(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         selected.discard(payload)
     else:
         selected.add(payload)
+    logger.info("toggle_quota: user %s toggled %s → %s", u.effective_user.id, payload, selected)
     await q.edit_message_reply_markup(reply_markup=_quota_kb(selected))
     return QUOTA
 
@@ -220,21 +230,26 @@ async def _show_results(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     cats = sorted(ctx.user_data["selected_cats"])
     quotas = [FULL_QUOTA.get(c, c) for c in sorted(ctx.user_data["selected_quotas"])]
 
-    await u.message.reply_text(
-        f"Fetching results for Rank <b>{rank}</b>…",
+    msg = u.message or (u.callback_query.message if u.callback_query else None)
+    if not msg:
+        logger.error("_show_results: no message available on update")
+        return ConversationHandler.END
+
+    await msg.reply_text(
+        f"Fetching results for Rank <b>{html.escape(str(rank))}</b>…",
         parse_mode=ParseMode.HTML,
     )
 
     try:
         rows = await get_neet_options_for_categories(rank, cats, quotas, max_rows=100)
     except Exception as e:
-        logger.error("DB error: %s", e)
-        await u.message.reply_text("Could not fetch results. Try again later.")
+        logger.error("DB error in _show_results: %s", e)
+        await msg.reply_text("Could not fetch results. Try again later.")
         return ConversationHandler.END
 
     if not rows:
-        await u.message.reply_text(
-            f"No colleges found for Rank <b>{rank}</b>, Categories <b>{', '.join(cats)}</b>.",
+        await msg.reply_text(
+            f"No colleges found for Rank <b>{html.escape(str(rank))}</b>, Categories <b>{html.escape(', '.join(cats))}</b>.",
             parse_mode=ParseMode.HTML,
         )
         return ConversationHandler.END
@@ -245,7 +260,7 @@ async def _show_results(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     text = _build_results_text(rows, 0, rank, ", ".join(cats), ctx.user_data["quota_label"])
     has_more = len(rows) > 25
-    await u.message.reply_text(text, reply_markup=_results_kb(has_more), parse_mode=ParseMode.HTML)
+    await msg.reply_text(text, reply_markup=_results_kb(has_more), parse_mode=ParseMode.HTML)
     return RESULTS
 
 
