@@ -35,12 +35,10 @@ _QUOTAS = [
     ("Employees State Insurance Scheme(ESI)", "es"),
     ("Jamia Internal Quota", "ja"),
 ]
-# reverse short-code mapping for DB queries
 FULL_QUOTA = {code: name for name, code in _QUOTAS}
 
 
 def _category_kb(selected: set) -> InlineKeyboardMarkup:
-    """Build category inline keyboard with ✅/❌ toggle per item."""
     buttons = []
     for cat in _ALL_CATEGORIES:
         mark = "✅" if cat in selected else "❌"
@@ -50,12 +48,10 @@ def _category_kb(selected: set) -> InlineKeyboardMarkup:
 
 
 def _quota_kb(selected: set) -> InlineKeyboardMarkup:
-    """Build quota inline keyboard with ✅/❌ toggle per item."""
     buttons = []
     for name, code in _QUOTAS:
         mark = "✅" if code in selected else "❌"
-        # keep button label short
-        short = name.split("(")[0].strip()[:20]  # first 20 chars
+        short = name.split("(")[0].strip()[:20]
         buttons.append(InlineKeyboardButton(f"{mark} {short}", callback_data=f"quota:{code}"))
     done_btn = InlineKeyboardButton("✅ Done", callback_data="quota:done")
     return InlineKeyboardMarkup([buttons[i:i + 1] for i in range(0, len(buttons), 1)] + [[done_btn]])
@@ -76,7 +72,7 @@ async def got_rank(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         await u.message.reply_text("Enter a valid number rank.")
         return RANK
     ctx.user_data["rank"] = int(text)
-    ctx.user_data["selected_cats"] = {"OPEN"}  # default pre-selected
+    ctx.user_data["selected_cats"] = {"OPEN"}
     q = ctx.user_data["rank"]
     await u.message.reply_text(
         f"Rank: <b>{q}</b>\n\nPick your <b>categories</b> (tap to toggle, then Done):",
@@ -105,7 +101,6 @@ async def toggle_category(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         )
         return QUOTA
 
-    # toggle
     selected = ctx.user_data["selected_cats"]
     if payload in selected:
         selected.discard(payload)
@@ -172,7 +167,6 @@ async def got_phone(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     logger.info("User %s phone: %s rank: %s cats: %s quotas: %s", u.effective_user.id, phone, rank, cats, quotas)
 
-    # persist lead
     try:
         await store_lead(
             telegram_user_id=u.effective_user.id,
@@ -191,11 +185,8 @@ async def got_phone(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         parse_mode=ParseMode.HTML,
     )
 
-    # fetch results for multiple categories/quotas
     try:
-        rows = await get_neet_options_for_categories(
-            rank, cats, quotas, max_rows=100
-        )
+        rows = await get_neet_options_for_categories(rank, cats, quotas, max_rows=100)
     except Exception as e:
         logger.error("DB error: %s", e)
         await u.message.reply_text("Could not fetch results. Try again later.")
@@ -214,7 +205,7 @@ async def got_phone(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     text = _build_results_text(rows, 0, rank, ", ".join(cats), ctx.user_data["quota_label"])
     has_more = len(rows) > 25
-    await u.message.reply_text(text, reply_markup=_results_kb(has_more), parse_mode=ParseMode.HTML)
+    await u.message.reply_text(text, reply_markup=_results_kb(has_more), parse_mode=ParseMode.MARKDOWN)
     return RESULTS
 
 
@@ -232,7 +223,7 @@ async def show_more(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     text = _build_results_text(rows, offset, rank, cat_str, quota_label)
     has_more = len(rows) > offset + 25
-    await q.edit_message_text(text, reply_markup=_results_kb(has_more), parse_mode=ParseMode.HTML)
+    await q.edit_message_text(text, reply_markup=_results_kb(has_more), parse_mode=ParseMode.MARKDOWN)
     return RESULTS
 
 
@@ -247,18 +238,44 @@ async def start_over(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     return RANK
 
 
-def _format_row(idx: int, row: dict) -> str:
-    name = row.get("institution_name", "?")
-    prog = row.get("program_code", "")
-    ql = row.get("quota_label", "")
-    o = row.get("opening_rank", "")
-    c = row.get("closing_rank", "")
-    rnd = row.get("round_key", "")
-    return (
-        f"<b>{idx}. {name}</b>\n"
-        f"   Program: {prog} | Quota: {ql}\n"
-        f"   Rank: {o} → {c} | Round: {rnd}\n"
-    )
+def _trunc(text: str, max_len: int = 25) -> str:
+    return text[:max_len] if len(text) <= max_len else text[:max_len - 1] + "…"
+
+
+def _pad(text: str, width: int) -> str:
+    # Pad to fixed width for table columns
+    t = _trunc(text, width)
+    # Use simple left padding with spaces
+    return t + " " * (width - len(t))
+
+
+def _build_results_text(rows: list, offset: int, rank: int, cat: str, quota_label: str) -> str:
+    total = len(rows)
+    end = min(offset + 25, total)
+    header = f"📊 *Results for Rank {rank} ({cat})*\n"
+    header += f"_Showing {offset + 1}-{end} of {total} colleges_\n\n"
+
+    # Build table with monospace code block
+    lines = [
+        "```",
+        f"{'#':>3} {'College':<28} {'Program':<10} {'Quota':<12} {'Rank':<12} {'Round':<8}",
+        "-" * 78,
+    ]
+    for i, row in enumerate(rows[offset:end], start=offset + 1):
+        name = _trunc(row.get("institution_name", "?"), 28)
+        prog = _trunc(row.get("program_code", ""), 10)
+        ql = _trunc(row.get("quota_label", ""), 12)
+        o = str(row.get("opening_rank", "") or "")
+        c = str(row.get("closing_rank", "") or "")
+        rank_str = f"{o}-{c}" if o and c else "N/A"
+        rank_str = _trunc(rank_str, 12)
+        rnd = _trunc(str(row.get("round_key", "")), 8)
+        lines.append(f"{i:>3} {name:<28} {prog:<10} {ql:<12} {rank_str:<12} {rnd:<8}")
+
+    lines.append("```")
+
+    text = header + "\n".join(lines)
+    return text
 
 
 def _results_kb(has_more: bool) -> InlineKeyboardMarkup:
@@ -267,18 +284,6 @@ def _results_kb(has_more: bool) -> InlineKeyboardMarkup:
         buttons.append(InlineKeyboardButton("📋 Show More", callback_data="more"))
     buttons.append(InlineKeyboardButton("🔄 Start Over", callback_data="restart"))
     return InlineKeyboardMarkup([buttons])
-
-
-def _build_results_text(rows: list, offset: int, rank: int, cat: str, quota_label: str) -> str:
-    total = len(rows)
-    end = min(offset + 25, total)
-    header = f"<b>Results for Rank {rank} ({cat})</b>\n"
-    header += f"<i>Showing {offset + 1}-{end} of {total} colleges</i>\n\n"
-    lines = [_format_row(i + 1, row) for i, row in enumerate(rows[offset:end], start=offset)]
-    text = header + "\n".join(lines)
-    if len(text) > 4000:
-        text = text[:4000] + "\n… <i>(truncated)</i>"
-    return text
 
 
 async def cancel(u: Update, _: ContextTypes.DEFAULT_TYPE) -> int:

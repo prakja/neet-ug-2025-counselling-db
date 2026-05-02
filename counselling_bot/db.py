@@ -24,7 +24,7 @@ async def get_pool():
     return _pool
 
 
-async def get_neet_options_for_categories(rank, categories: list, quotas: list, max_rows=30):
+async def get_neet_options_for_categories(rank, categories: list, quotas: list, max_rows=100):
     pool = await get_pool()
     quota_arr = quotas if quotas else None
     seen = set()
@@ -33,15 +33,21 @@ async def get_neet_options_for_categories(rank, categories: list, quotas: list, 
     async with pool.acquire() as conn:
         for cat in categories:
             rows = await conn.fetch(
-                "SELECT * FROM neetcounselling2025.fn_available_options_by_rank($1, $2, false, null, null, true, $3, $4)",
-                rank, cat, quota_arr, max_rows,
+                "SELECT * FROM neetcounselling2025.fn_available_options_by_rank($1, $2, $3, $4, $5, $6, $7, $8)",
+                rank,       # $1 p_rank
+                cat,        # $2 p_candidate_category
+                False,      # $3 p_is_pwd
+                None,       # $4 p_program_codes
+                None,       # $5 p_round_keys
+                True,       # $6 p_include_after_stray
+                quota_arr,  # $7 p_quota_labels
+                max_rows,   # $8 p_max_rows
             )
             for r in rows:
                 key = (r.get("institution_id"), r.get("program_code"), r.get("quota_label"), r.get("round_key"))
                 if key not in seen:
                     seen.add(key)
                     all_rows.append(dict(r))
-    # Sort by closing_rank ascending for best options first
     all_rows.sort(key=lambda r: (r.get("closing_rank") or 9999999))
     return all_rows
 
@@ -51,8 +57,15 @@ async def get_neet_options(rank, category="OPEN", quota=None, max_rows=30):
     quota_arr = [quota] if quota else None
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT * FROM neetcounselling2025.fn_available_options_by_rank($1, $2, false, null, null, true, $3, $4)",
-            rank, category, quota_arr, max_rows,
+            "SELECT * FROM neetcounselling2025.fn_available_options_by_rank($1, $2, $3, $4, $5, $6, $7, $8)",
+            rank,       # $1 p_rank
+            category,   # $2 p_candidate_category
+            False,      # $3 p_is_pwd
+            None,       # $4 p_program_codes
+            None,       # $5 p_round_keys
+            True,       # $6 p_include_after_stray
+            quota_arr,  # $7 p_quota_labels
+            max_rows,   # $8 p_max_rows
         )
     return [dict(r) for r in rows]
 
