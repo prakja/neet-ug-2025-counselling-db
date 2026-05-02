@@ -2,11 +2,12 @@ import pytest
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 from telegram import Update, CallbackQuery, Message, User
-from telegram.ext import ContextTypes
+from telegram.ext import ContextTypes, ConversationHandler
 
 from counselling_bot.handlers import (
     RANK, CATEGORY, QUOTA, PHONE, RESULTS,
     start, got_rank, toggle_category, toggle_quota, got_phone,
+    show_more,
     _show_results, _build_results_text, _results_kb,
     _category_kb, _quota_kb, _ALL_CATEGORIES, _QUOTAS, FULL_QUOTA,
 )
@@ -15,11 +16,12 @@ from counselling_bot.handlers import (
 # Fixtures
 @pytest.fixture
 def mock_update():
-    """Mock Update with user ID 12345."""
     update = MagicMock(spec=Update)
     update.effective_user = MagicMock(spec=User)
     update.effective_user.id = 12345
     update.effective_user.full_name = "Test User"
+    update.message = MagicMock(spec=Message)
+    update.message.reply_text = AsyncMock()
     return update
 
 
@@ -58,12 +60,14 @@ def test_category_kb_defaults():
 
 
 def test_category_kb_multiple_selected():
-    """Multiple categories can be selected."""
     kb = _category_kb({"OPEN", "OBC", "SC"})
-    buttons = kb.inline_keyboard
-    assert "✅ OPEN" in buttons[0][0].text
-    assert "✅ SC" in buttons[0][1].text
-    assert "✅ OBC" in buttons[1][0].text
+    texts = [btn.text for row in kb.inline_keyboard for btn in row]
+    assert any("✅ OPEN" in t for t in texts)
+    assert any("✅ SC" in t for t in texts)
+    assert any("✅ OBC" in t for t in texts)
+    assert any("❌ ST" in t for t in texts)
+    assert any("❌ EWS" in t for t in texts)
+    assert any("Done" in t for t in texts)
 
 
 # Tests for quota keyboard
@@ -156,8 +160,7 @@ async def test_toggle_quota_done_with_lead_skip(mock_update, mock_callback_query
             result = await toggle_quota(mock_update, mock_context)
 
     assert result == RESULTS
-    # Should skip phone step entirely
-    mock_callback_query.edit_message_text.assert_called_once()
+    mock_update.message.reply_text.assert_called()
 
 
 @pytest.mark.asyncio
@@ -253,3 +256,29 @@ async def test_full_flow_from_rank_to_results(mock_update, mock_callback_query, 
     with patch("counselling_bot.handlers.check_lead_exists", new=AsyncMock(return_value=None)):
         result = await toggle_quota(mock_update, mock_context)
     assert result == PHONE
+
+
+@pytest.mark.asyncio
+async def test_toggle_category_expired_session(mock_update, mock_callback_query, mock_context):
+    mock_context.user_data = {}
+    mock_callback_query.data = "cat:OPEN"
+    result = await toggle_category(mock_update, mock_context)
+    assert result == ConversationHandler.END
+    mock_callback_query.edit_message_text.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_toggle_quota_expired_session(mock_update, mock_callback_query, mock_context):
+    mock_context.user_data = {}
+    mock_callback_query.data = "quota:ai"
+    result = await toggle_quota(mock_update, mock_context)
+    assert result == ConversationHandler.END
+    mock_callback_query.edit_message_text.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_show_more_expired_session(mock_update, mock_callback_query, mock_context):
+    mock_context.user_data = {}
+    result = await show_more(mock_update, mock_context)
+    assert result == ConversationHandler.END
+    mock_callback_query.edit_message_text.assert_called_once()

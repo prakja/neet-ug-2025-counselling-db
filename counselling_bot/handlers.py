@@ -3,6 +3,7 @@
 Conversation flow:
 /start → rank → multi-select category → done → multi-select quota → done → phone → results
 """
+import html
 import json
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
@@ -87,6 +88,13 @@ async def toggle_category(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     await q.answer()
     payload = q.data.split(":", 1)[1]
 
+    if "selected_cats" not in ctx.user_data:
+        await q.edit_message_text(
+            "Session expired. /start to restart.",
+            parse_mode=ParseMode.HTML,
+        )
+        return ConversationHandler.END
+
     if payload == "done":
         if not ctx.user_data["selected_cats"]:
             await q.answer("Select at least one category", show_alert=True)
@@ -117,6 +125,13 @@ async def toggle_quota(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     q = u.callback_query
     await q.answer()
     payload = q.data.split(":", 1)[1]
+
+    if "selected_quotas" not in ctx.user_data:
+        await q.edit_message_text(
+            "Session expired. /start to restart.",
+            parse_mode=ParseMode.HTML,
+        )
+        return ConversationHandler.END
 
     if payload == "done":
         if not ctx.user_data["selected_quotas"]:
@@ -238,6 +253,13 @@ async def show_more(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     q = u.callback_query
     await q.answer()
 
+    if not ctx.user_data.get("results"):
+        await q.edit_message_text(
+            "Session expired. /start to restart.",
+            parse_mode=ParseMode.HTML,
+        )
+        return ConversationHandler.END
+
     rows = ctx.user_data.get("results", [])
     offset = ctx.user_data.get("results_offset", 0) + 25
     ctx.user_data["results_offset"] = offset
@@ -255,6 +277,7 @@ async def show_more(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 async def start_over(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     q = u.callback_query
     await q.answer()
+
     ctx.user_data.clear()
     await q.edit_message_text(
         "<b>NEET College Predictor</b>\n\nSend your <b>NEET All India Rank</b> (e.g. <code>27360</code>):",
@@ -277,18 +300,18 @@ def _pad(text: str, width: int) -> str:
 def _build_results_text(rows: list, offset: int, rank: int, cat: str, quota_label: str) -> str:
     total = len(rows)
     end = min(offset + 25, total)
-    header = f"📊 <b>Results for Rank {rank} ({cat})</b>\n"
+    header = f"📊 <b>Results for Rank {html.escape(str(rank))} ({html.escape(cat)})</b>\n"
     header += f"<i>Showing {offset + 1}-{end} of {total} colleges</i>\n\n"
 
     lines = []
     for i, row in enumerate(rows[offset:end], start=offset + 1):
-        name = _trunc(row.get("institution_name", "?"), 35)
-        prog = _trunc(row.get("program_code", ""), 12)
-        ql = _trunc(row.get("quota_label", ""), 15)
+        name = html.escape(_trunc(row.get("institution_name", "?"), 35))
+        prog = html.escape(_trunc(row.get("program_code", ""), 12))
+        ql = html.escape(_trunc(row.get("quota_label", ""), 15))
         o = str(row.get("opening_rank", "") or "")
         c = str(row.get("closing_rank", "") or "")
         rank_str = f"{o}→{c}" if o and c else "N/A"
-        rnd = _trunc(str(row.get("round_key", "")), 6)
+        rnd = html.escape(_trunc(str(row.get("round_key", "")), 6))
         lines.append(
             f"<b>{i}.</b> {name}\n"
             f"   <code>{prog}</code> | {ql}\n"
