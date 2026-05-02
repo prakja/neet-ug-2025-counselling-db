@@ -17,7 +17,7 @@ from telegram.ext import (
     filters,
 )
 
-from .db import get_neet_options, get_neet_options_for_categories, store_lead, close_pool
+from .db import get_neet_options, get_neet_options_for_categories, store_lead, check_lead_exists, close_pool
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +103,10 @@ async def toggle_category(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     selected = ctx.user_data["selected_cats"]
     if payload in selected:
-        selected.discard(payload)
+        if payload == "OPEN":
+            await q.answer("OPEN is always included", show_alert=False)
+        else:
+            selected.discard(payload)
     else:
         selected.add(payload)
     await q.edit_message_reply_markup(reply_markup=_category_kb(selected))
@@ -119,6 +122,15 @@ async def toggle_quota(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         if not ctx.user_data["selected_quotas"]:
             await q.answer("Select at least one quota", show_alert=True)
             return QUOTA
+
+        # Check if user already shared contact (lead exists)
+        existing = await check_lead_exists(u.effective_user.id)
+        if existing:
+            ctx.user_data["phone"] = existing["phone_number"]
+            ctx.user_data["full_name"] = existing["full_name"]
+            logger.info("User %s already has lead, skipping phone step", u.effective_user.id)
+            return await _show_results(u, ctx)
+
         cat_str = ", ".join(sorted(ctx.user_data["selected_cats"]))
         quota_names = [FULL_QUOTA.get(c, c) for c in ctx.user_data["selected_quotas"]]
         await q.edit_message_text(
@@ -180,8 +192,21 @@ async def got_phone(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         logger.error("Failed to store lead: %s", e)
 
     await u.message.reply_text(
-        f"Thanks <b>{full_name}</b>!\nFetching results for Rank <b>{rank}</b>…",
+        f"Thanks <b>{full_name}</b>!",
         reply_markup=ReplyKeyboardRemove(),
+        parse_mode=ParseMode.HTML,
+    )
+
+    return await _show_results(u, ctx)
+
+
+async def _show_results(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    rank = ctx.user_data["rank"]
+    cats = sorted(ctx.user_data["selected_cats"])
+    quotas = [FULL_QUOTA.get(c, c) for c in sorted(ctx.user_data["selected_quotas"])]
+
+    await u.message.reply_text(
+        f"Fetching results for Rank <b>{rank}</b>…",
         parse_mode=ParseMode.HTML,
     )
 
@@ -205,7 +230,7 @@ async def got_phone(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     text = _build_results_text(rows, 0, rank, ", ".join(cats), ctx.user_data["quota_label"])
     has_more = len(rows) > 25
-    await u.message.reply_text(text, reply_markup=_results_kb(has_more), parse_mode=ParseMode.MARKDOWN)
+    await u.message.reply_text(text, reply_markup=_results_kb(has_more), parse_mode=ParseMode.HTML)
     return RESULTS
 
 
@@ -223,7 +248,7 @@ async def show_more(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     text = _build_results_text(rows, offset, rank, cat_str, quota_label)
     has_more = len(rows) > offset + 25
-    await q.edit_message_text(text, reply_markup=_results_kb(has_more), parse_mode=ParseMode.MARKDOWN)
+    await q.edit_message_text(text, reply_markup=_results_kb(has_more), parse_mode=ParseMode.HTML)
     return RESULTS
 
 
@@ -252,29 +277,27 @@ def _pad(text: str, width: int) -> str:
 def _build_results_text(rows: list, offset: int, rank: int, cat: str, quota_label: str) -> str:
     total = len(rows)
     end = min(offset + 25, total)
-    header = f"📊 *Results for Rank {rank} ({cat})*\n"
-    header += f"_Showing {offset + 1}-{end} of {total} colleges_\n\n"
+    header = f"📊 <b>Results for Rank {rank} ({cat})</b>\n"
+    header += f"<i>Showing {offset + 1}-{end} of {total} colleges</i>\n\n"
 
-    # Build table with monospace code block
-    lines = [
-        "```",
-        f"{'#':>3} {'College':<28} {'Program':<10} {'Quota':<12} {'Rank':<12} {'Round':<8}",
-        "-" * 78,
-    ]
+    lines = []
     for i, row in enumerate(rows[offset:end], start=offset + 1):
-        name = _trunc(row.get("institution_name", "?"), 28)
-        prog = _trunc(row.get("program_code", ""), 10)
-        ql = _trunc(row.get("quota_label", ""), 12)
+        name = _trunc(row.get("institution_name", "?"), 35)
+        prog = _trunc(row.get("program_code", ""), 12)
+        ql = _trunc(row.get("quota_label", ""), 15)
         o = str(row.get("opening_rank", "") or "")
         c = str(row.get("closing_rank", "") or "")
-        rank_str = f"{o}-{c}" if o and c else "N/A"
-        rank_str = _trunc(rank_str, 12)
-        rnd = _trunc(str(row.get("round_key", "")), 8)
-        lines.append(f"{i:>3} {name:<28} {prog:<10} {ql:<12} {rank_str:<12} {rnd:<8}")
-
-    lines.append("```")
+        rank_str = f"{o}→{c}" if o and c else "N/A"
+        rnd = _trunc(str(row.get("round_key", "")), 6)
+        lines.append(
+            f"<b>{i}.</b> {name}\n"
+            f"   <code>{prog}</code> | {ql}\n"
+            f"   Rank: <code>{rank_str}</code> | {rnd}\n"
+        )
 
     text = header + "\n".join(lines)
+    if len(text) > 4000:
+        text = text[:4000] + "\n… <i>(truncated)</i>"
     return text
 
 

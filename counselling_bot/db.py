@@ -90,6 +90,16 @@ async def store_lead(telegram_user_id, phone, full_name, rank, categories, quota
     logger.info("Stored lead for user %s rank %s", telegram_user_id, rank)
 
 
+async def check_lead_exists(telegram_user_id):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT phone_number, full_name FROM neetcounselling2025.leads WHERE telegram_user_id = $1",
+            telegram_user_id,
+        )
+    return dict(row) if row else None
+
+
 async def get_quota_labels():
     pool = await get_pool()
     async with pool.acquire() as conn:
