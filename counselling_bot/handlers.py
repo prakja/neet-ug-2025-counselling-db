@@ -285,7 +285,7 @@ async def show_more(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     text = _build_results_text(rows, offset, rank, cat_str, quota_label)
     has_more = len(rows) > offset + 25
-    await q.edit_message_text(text, reply_markup=_results_kb(has_more), parse_mode=ParseMode.HTML)
+    await q.message.reply_text(text, reply_markup=_results_kb(has_more), parse_mode=ParseMode.HTML)
     return RESULTS
 
 
