@@ -148,6 +148,11 @@ async def toggle_quota(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
             await q.answer("Select at least one quota", show_alert=True)
             return QUOTA
 
+        # If user already shared phone in this session, show results directly
+        if ctx.user_data.get("phone"):
+            logger.info("toggle_quota: user %s has phone in session, showing results", u.effective_user.id)
+            return await _show_results(u, ctx)
+
         try:
             existing = await check_lead_exists(u.effective_user.id)
         except Exception as e:
@@ -310,7 +315,14 @@ async def start_over(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     q = u.callback_query
     await q.answer()
 
+    preserved = {}
+    for key in ("phone", "full_name"):
+        if key in ctx.user_data:
+            preserved[key] = ctx.user_data[key]
+
     ctx.user_data.clear()
+    ctx.user_data.update(preserved)
+
     await q.edit_message_text(
         "<b>NEET College Predictor</b>\n\nSend your <b>NEET All India Rank</b> (e.g. <code>27360</code>):",
         parse_mode=ParseMode.HTML,
@@ -320,7 +332,7 @@ async def start_over(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def share_results(u: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     q = u.callback_query
-    await q.answer()
+    await q.answer("Copied! Forward this message to friends.", show_alert=True)
 
     rank = ctx.user_data.get("rank")
     cats = sorted(ctx.user_data.get("selected_cats", []))
