@@ -133,6 +133,27 @@ resource "aws_iam_role" "ecs_task" {
   tags = local.common_tags
 }
 
+resource "aws_iam_role_policy" "ecs_exec_ssm" {
+  name = "${local.name_prefix}-exec-ssm"
+  role = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ssmmessages:CreateControlChannel",
+          "ssmmessages:CreateDataChannel",
+          "ssmmessages:OpenControlChannel",
+          "ssmmessages:OpenDataChannel"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
 resource "aws_ecs_task_definition" "counselling" {
   family                   = "${local.name_prefix}"
   network_mode             = "awsvpc"
@@ -153,6 +174,10 @@ resource "aws_ecs_task_definition" "counselling" {
       image     = "${aws_ecr_repository.counselling.repository_url}:latest"
       essential = true
       command   = ["python", "run_counselling_bot.py"]
+
+      linuxParameters = {
+        initProcessEnabled = true
+      }
 
       environment = [
         { name = "AWS_REGION", value = var.aws_region },
@@ -183,6 +208,7 @@ resource "aws_ecs_service" "counselling" {
   cluster                = data.aws_ecs_cluster.shared.id
   task_definition        = aws_ecs_task_definition.counselling.arn
   desired_count          = var.counselling_bot_desired_count
+  enable_execute_command = true
 
   dynamic "capacity_provider_strategy" {
     for_each = var.use_fargate_spot ? [1] : []
@@ -204,7 +230,7 @@ resource "aws_ecs_service" "counselling" {
 
   network_configuration {
     subnets          = var.private_subnet_ids
-    security_groups  = [aws_security_group.counselling.id]
+    security_groups  = concat([aws_security_group.counselling.id], var.additional_security_group_ids)
     assign_public_ip = true
   }
 

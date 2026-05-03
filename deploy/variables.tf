@@ -25,6 +25,12 @@ variable "private_subnet_ids" {
   type        = list(string)
 }
 
+variable "additional_security_group_ids" {
+  description = "Additional security groups for ECS tasks (e.g., default SG for DB access)"
+  type        = list(string)
+  default     = []
+}
+
 variable "counselling_bot_token_secret_arn" {
   description = "Secrets Manager ARN for COUNSELLING_BOT_TOKEN"
   type        = string

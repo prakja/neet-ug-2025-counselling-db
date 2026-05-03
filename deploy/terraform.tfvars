@@ -9,9 +9,20 @@ private_subnet_ids = [
   "subnet-0e4b884bd5bf7a94b"
 ]
 
+# Attach default SG to enable Aurora DB connectivity
+additional_security_group_ids = [
+  "sg-07a6946d804345bf4"
+]
+
 # Secrets - leave empty if using plain env vars for staging
 counselling_bot_token_secret_arn = ""
 db_password_secret_arn           = ""
+
+# DB config for prod Aurora cluster
+db_host   = "neetprep-aurora-cluster-mumbai.cluster-cvvtorjqg7t7.ap-south-1.rds.amazonaws.com"
+db_user   = "neet_bot_user"
+db_name   = "learner_development"
+db_port   = "5432"
 
 # Fargate Spot for cost savings
 use_fargate_spot = true
