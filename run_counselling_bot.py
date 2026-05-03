@@ -4,6 +4,9 @@ Loads .env file from project root, then starts the bot.
 """
 
 import os
+import sys
+import signal
+import time
 import logging
 from pathlib import Path
 
@@ -41,9 +44,30 @@ def main() -> None:
                     os.getenv("DB_HOST", "default"),
                     os.getenv("DB_USER", "default"))
 
-    logger.info("Starting NEET Counselling Telegram Bot...")
+    logger.info("Initializing NEET Counselling Telegram Bot...")
     app = create_app(token)
 
+    # Handle SIGTERM gracefully (ECS sends this before stopping task)
+    def _signal_handler(signum, _frame):
+        logger.info("Received signal %s, shutting down gracefully...", signum)
+        try:
+            app.stop()
+        except Exception:
+            pass
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, _signal_handler)
+    signal.signal(signal.SIGINT, _signal_handler)
+
+    # Wait for any old bot instance to drop its Telegram connection.
+    # ECS rolling deployments can briefly run two tasks with the same token,
+    # causing "Conflict: terminated by other getUpdates request".
+    startup_delay = int(os.getenv("BOT_STARTUP_DELAY_SECONDS", "5"))
+    if startup_delay > 0:
+        logger.info("Waiting %s seconds before polling to clear previous connection...", startup_delay)
+        time.sleep(startup_delay)
+
+    logger.info("Starting polling...")
     try:
         app.run_polling()
     except KeyboardInterrupt:

@@ -179,6 +179,8 @@ resource "aws_ecs_task_definition" "counselling" {
         initProcessEnabled = true
       }
 
+      stopTimeout = 60
+
       environment = [
         { name = "AWS_REGION", value = var.aws_region },
         { name = "DB_HOST", value = var.db_host },
@@ -237,6 +239,15 @@ resource "aws_ecs_service" "counselling" {
   deployment_circuit_breaker {
     enable   = true
     rollback = true
+  }
+
+  deployment_controller {
+    type = "ECS"
+  }
+
+  deployment_configuration {
+    maximum_percent         = 100
+    minimum_healthy_percent = 0
   }
 
   tags = local.common_tags
